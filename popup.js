@@ -2,6 +2,7 @@ const slider = document.getElementById("threshold-slider");
 const label = document.getElementById("threshold-label");
 const enabledToggle = document.getElementById("enabled-toggle");
 const resetBtn = document.getElementById("reset-btn");
+const notesBtn = document.getElementById("notes-btn");
 const currentTimeEl = document.getElementById("current-time");
 const statusNote = document.getElementById("status-note");
 const presetBtns = document.querySelectorAll(".preset-btn");
@@ -45,6 +46,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
 
     currentArticleUrl = resp.url;
     resetBtn.disabled = false;
+    notesBtn.disabled = false;
     currentTimeEl.classList.remove("inactive");
     statusNote.textContent = "Substack session time";
     updateTimeDisplay(resp.time);
@@ -93,6 +95,14 @@ enabledToggle.addEventListener("change", () => {
   const enabled = enabledToggle.checked;
   chrome.storage.local.set({ enabled });
   chrome.runtime.sendMessage({ type: "enabledChanged", enabled });
+});
+
+// --- Take notes ---
+notesBtn.addEventListener("click", () => {
+  if (!activeTabId) return;
+  chrome.tabs.sendMessage(activeTabId, { type: "openNotes" }, () => {
+    window.close();
+  });
 });
 
 // --- Reset ---

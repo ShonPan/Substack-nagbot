@@ -1,111 +1,72 @@
 // Service worker for state management
 // Timer is cumulative across all Substack tabs in a session.
 // Resets when user leaves Substack entirely, closes all Substack tabs, or closes browser.
-
-const injectedTabs = new Set();   // tabs with content script injected
-const substackTabs = new Set();   // tabs currently on a Substack page
-const activeTabs = new Map();     // tabId -> last activity timestamp from content script
-
-let tickInterval = null;
+//
+// All state lives in chrome.storage.session so it survives service worker restarts.
+// Content scripts drive the tick — they message here each active second.
 
 // --- Substack detection & content script injection ---
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  // When a tab navigates to a new URL, check if it left Substack
-  if (changeInfo.url) {
-    injectedTabs.delete(tabId);
-    // We'll re-evaluate below if status is complete; otherwise mark as gone for now
-    substackTabs.delete(tabId);
-    activeTabs.delete(tabId);
-    checkSessionEnd();
+async function getSubstackTabs() {
+  const { substackTabIds = [] } = await chrome.storage.session.get({ substackTabIds: [] });
+  return new Set(substackTabIds);
+}
+
+async function addSubstackTab(tabId) {
+  const tabs = await getSubstackTabs();
+  tabs.add(tabId);
+  await chrome.storage.session.set({ substackTabIds: [...tabs] });
+}
+
+async function removeSubstackTab(tabId) {
+  const tabs = await getSubstackTabs();
+  tabs.delete(tabId);
+  await chrome.storage.session.set({ substackTabIds: [...tabs] });
+  if (tabs.size === 0) {
+    await chrome.storage.session.set({ sessionTime: 0, toastDismissed: false });
   }
+}
 
-  if (changeInfo.status !== "complete") return;
-  if (!tab.url) return;
-
+function tryInject(tabId, url) {
+  if (!url) return;
   try {
-    const url = new URL(tab.url);
-    if (!url.pathname.includes("/p/")) return;
+    const parsed = new URL(url);
+    if (!parsed.pathname.includes("/p/")) return;
   } catch {
     return;
   }
 
-  if (injectedTabs.has(tabId)) return;
-
   chrome.scripting.executeScript({
     target: { tabId },
     func: detectSubstack,
-  }).then((results) => {
+  }).then(async (results) => {
     if (results?.[0]?.result) {
-      injectedTabs.add(tabId);
-      substackTabs.add(tabId);
-      chrome.scripting.insertCSS({ target: { tabId }, files: ["styles.css"] });
-      chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-      ensureTickerRunning();
+      await addSubstackTab(tabId);
+      chrome.scripting.insertCSS({ target: { tabId }, files: ["styles.css"] }).catch(() => {});
+      chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }).catch(() => {});
     }
   }).catch(() => {});
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) {
+    removeSubstackTab(tabId);
+  }
+  if (changeInfo.status === "complete") {
+    tryInject(tabId, tab.url);
+  }
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.tabs.get(tabId, (tab) => {
+    if (chrome.runtime.lastError || !tab?.url) return;
+    tryInject(tabId, tab.url);
+  });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  injectedTabs.delete(tabId);
-  substackTabs.delete(tabId);
-  activeTabs.delete(tabId);
-  checkSessionEnd();
+  removeSubstackTab(tabId);
 });
-
-// When all Substack tabs are gone, reset the session timer
-function checkSessionEnd() {
-  if (substackTabs.size === 0) {
-    chrome.storage.session.set({ sessionTime: 0, toastDismissed: false });
-    stopTicker();
-  }
-}
-
-// --- Central ticker (runs in background, increments shared timer) ---
-
-function ensureTickerRunning() {
-  if (tickInterval) return;
-  tickInterval = setInterval(async () => {
-    // Check if any tab has recent activity
-    const now = Date.now();
-    let anyActive = false;
-    for (const [, lastActive] of activeTabs) {
-      if (now - lastActive < 62_000) { // 60s timeout + 2s buffer
-        anyActive = true;
-        break;
-      }
-    }
-    if (!anyActive) return;
-
-    const { enabled = true } = await chrome.storage.local.get({ enabled: true });
-    if (!enabled) return;
-
-    const { sessionTime = 0 } = await chrome.storage.session.get({ sessionTime: 0 });
-    const newTime = sessionTime + 1;
-    await chrome.storage.session.set({ sessionTime: newTime });
-
-    // Check threshold
-    const { threshold = 900 } = await chrome.storage.local.get({ threshold: 900 });
-    const { toastDismissed = false } = await chrome.storage.session.get({ toastDismissed: false });
-
-    if (newTime >= threshold && !toastDismissed) {
-      // Tell the active Substack tab to show the toast
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const tab = tabs[0];
-        if (tab && substackTabs.has(tab.id)) {
-          chrome.tabs.sendMessage(tab.id, { type: "showToast", time: newTime }).catch(() => {});
-        }
-      });
-    }
-  }, 1000);
-}
-
-function stopTicker() {
-  if (tickInterval) {
-    clearInterval(tickInterval);
-    tickInterval = null;
-  }
-}
 
 // --- Detect Substack by checking for known markers in the page ---
 
@@ -131,12 +92,28 @@ function detectSubstack() {
 // --- Message handling ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "activity") {
-    // Content script reports user activity
-    if (sender.tab?.id) {
-      activeTabs.set(sender.tab.id, Date.now());
-    }
-    return;
+  // Content script reports an active second — increment the session timer
+  if (message.type === "tick") {
+    (async () => {
+      const { enabled = true } = await chrome.storage.local.get({ enabled: true });
+      if (!enabled) {
+        sendResponse({ time: 0, showToast: false });
+        return;
+      }
+
+      const { sessionTime = 0 } = await chrome.storage.session.get({ sessionTime: 0 });
+      const newTime = sessionTime + 1;
+      await chrome.storage.session.set({ sessionTime: newTime });
+
+      const { threshold = 900 } = await chrome.storage.local.get({ threshold: 900 });
+      const { toastDismissed = false } = await chrome.storage.session.get({ toastDismissed: false });
+
+      sendResponse({
+        time: newTime,
+        showToast: newTime >= threshold && !toastDismissed,
+      });
+    })();
+    return true;
   }
 
   if (message.type === "getSettings") {
@@ -155,7 +132,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "queryTime") {
-    // For popup: return session time
     chrome.storage.session.get({ sessionTime: 0 }, (data) => {
       sendResponse({ time: data.sessionTime });
     });
@@ -182,52 +158,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "toastDismissed") {
-    // Mark toast as dismissed for this session
     chrome.storage.session.set({ toastDismissed: true });
     sendResponse({ ok: true });
     return true;
   }
 
   if (message.type === "resetSession") {
-    chrome.storage.session.set({ sessionTime: 0, toastDismissed: false });
-    // Tell all injected tabs to hide toast
-    for (const tabId of injectedTabs) {
-      chrome.tabs.sendMessage(tabId, { type: "resetToast" }).catch(() => {});
-    }
-    sendResponse({ ok: true });
+    (async () => {
+      await chrome.storage.session.set({ sessionTime: 0, toastDismissed: false });
+      const tabs = await getSubstackTabs();
+      for (const tabId of tabs) {
+        chrome.tabs.sendMessage(tabId, { type: "resetToast" }).catch(() => {});
+      }
+      sendResponse({ ok: true });
+    })();
     return true;
   }
 
   if (message.type === "resetArticle") {
-    // Reset session timer + clear dismissed state for current article URL
-    chrome.storage.session.set({ sessionTime: 0, toastDismissed: false });
-    if (message.url) {
-      chrome.storage.local.get({ dismissedArticles: [] }, (data) => {
-        const list = data.dismissedArticles.filter((u) => u !== message.url);
-        chrome.storage.local.set({ dismissedArticles: list });
-      });
-    }
-    for (const tabId of injectedTabs) {
-      chrome.tabs.sendMessage(tabId, { type: "resetToast" }).catch(() => {});
-    }
-    sendResponse({ ok: true });
+    (async () => {
+      await chrome.storage.session.set({ sessionTime: 0, toastDismissed: false });
+      if (message.url) {
+        const { dismissedArticles = [] } = await chrome.storage.local.get({ dismissedArticles: [] });
+        const list = dismissedArticles.filter((u) => u !== message.url);
+        await chrome.storage.local.set({ dismissedArticles: list });
+      }
+      const tabs = await getSubstackTabs();
+      for (const tabId of tabs) {
+        chrome.tabs.sendMessage(tabId, { type: "resetToast" }).catch(() => {});
+      }
+      sendResponse({ ok: true });
+    })();
     return true;
   }
 
   if (message.type === "thresholdChanged") {
-    // Threshold change may trigger toast immediately — handled by the ticker
     sendResponse({ ok: true });
     return true;
   }
 
   if (message.type === "enabledChanged") {
-    for (const tabId of injectedTabs) {
-      chrome.tabs.sendMessage(tabId, {
-        type: "updateEnabled",
-        enabled: message.enabled,
-      }).catch(() => {});
-    }
-    sendResponse({ ok: true });
+    (async () => {
+      const tabs = await getSubstackTabs();
+      for (const tabId of tabs) {
+        chrome.tabs.sendMessage(tabId, {
+          type: "updateEnabled",
+          enabled: message.enabled,
+        }).catch(() => {});
+      }
+      sendResponse({ ok: true });
+    })();
     return true;
   }
 });

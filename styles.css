@@ -114,3 +114,91 @@
   color: #bbb;
   background: rgba(255, 255, 255, 0.06);
 }
+
+/* Notes sidebar */
+
+#mic-notes-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 340px;
+  height: 100vh;
+  z-index: 2147483647;
+  transform: translateX(100%);
+  transition: transform 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+#mic-notes-panel.mic-visible {
+  transform: translateX(0);
+}
+
+.mic-notes-inner {
+  background: #1a1a1a;
+  color: #e5e5e5;
+  height: 100%;
+  padding: 20px;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mic-notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.mic-notes-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.mic-notes-close {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.mic-notes-close:hover {
+  color: #bbb;
+}
+
+.mic-notes-textarea {
+  width: 100%;
+  flex: 1;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+  color: #e5e5e5;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+}
+
+.mic-notes-textarea::placeholder {
+  color: #555;
+}
+
+.mic-notes-textarea:focus {
+  border-color: #555;
+}
+
+.mic-notes-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
