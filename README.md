@@ -2,11 +2,9 @@
 
 A Chrome extension that tracks time spent on Substack and nudges you toward active engagement.
 
-## The Problem
+## Why
 
-Reading online is deceptively passive. You open an article, scroll through it, maybe nod along, and close the tab. Twenty minutes gone. You might remember the headline tomorrow, but the argument? The details? Unlikely.
-
-This isn't a failure of willpower. It's a design problem. Reading platforms are optimized for consumption, not comprehension. There's no friction between finishing one article and starting the next. The result is a kind of intellectual grazing — you cover a lot of ground without digesting anything.
+Reading online has more impact if there is active participation! Encourages Substack consumption to have notes which can be used for replies, or Obsidian.
 
 ## The Theory
 
